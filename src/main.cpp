@@ -1,3 +1,8 @@
+\\******** RBE 2001 Final Project **********\\
+\\******** March 17th 2021 ***************\\
+\\ Developed by Megan Aloise, Roopsa Ghoosh, and Cameron Huneke \\
+
+
 #include <Arduino.h>
 #include <Romi32U4.h>
 #include "Chassis.h"
