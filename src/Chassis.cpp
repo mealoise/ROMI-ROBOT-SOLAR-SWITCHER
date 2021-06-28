@@ -1,18 +1,73 @@
 #include "Chassis.h"
+#include "LineSensor.h"
 #include <Romi32U4.h>
 
 /** * Assume the robot drives about 12 inches / second Take the number of inches, divide by 12 and drive that long */
+
+LineSensor cls;
+
 void Chassis::driveDistance(float cm)
 {
-    encoders.getCountsAndResetLeft();
+    if (!ddstart)
+    {
+        encoders.getCountsAndResetLeft();
+        ddstart = true;
+    }
     float inches = cm / 2.54;
     float newVal = (inches / 7.8539) * CPR;
-    while (encoders.getCountsLeft() < newVal)
+
+    if (encoders.getCountsLeft() > newVal)
     {
-        motors.setEfforts(100, 100);
-    };
-    motors.setEfforts(0, 0);
-    delay(1000);
+        motors.setEfforts(0, 0);
+        setDDDone(true);
+    }
+    else
+    {
+        cls.lineFollow();
+    }
+}
+
+void Chassis::driveDistanceNoLine(float cm)
+{
+    if (!ddstart)
+    {
+        encoders.getCountsAndResetLeft();
+        ddstart = true;
+    }
+    float inches = cm / 2.54;
+    float newVal = (inches / 7.8539) * CPR;
+
+    if (encoders.getCountsLeft() > newVal)
+    {
+        motors.setEfforts(0, 0);
+        setDDDone(true);
+    }
+    else
+    {
+        motors.setEfforts(40,40);
+    }
+}
+
+void Chassis::driveDistanceBackward(float cm)
+{
+    if (checkloop == 0)
+    {
+        encoders.getCountsAndResetLeft();
+        checkloop++;
+    }
+
+    float inches = cm / 2.54;
+    float newVal = inches * CPR / 7.8539;
+
+    if (abs(encoders.getCountsLeft()) > newVal)
+    {
+        motors.setEfforts(0, 0);
+        setDDBDone(true);
+    }
+    else
+    {
+        motors.setEfforts(-50, -50);
+    }
 
     /**
     motors.setEfforts(100, 100);
@@ -20,17 +75,28 @@ void Chassis::driveDistance(float cm)
     motors.setEfforts(0, 0);
     */
 }
+
 /** * Assume the robot turns at about 180 degrees per second */
 void Chassis::turnAngle(float degrees)
 {
-    encoders.getCountsAndResetLeft();
-    float newVal = (degrees / 360) * wheelTrack * CPR / 2.5; // 2.5 inches is the diameter measured for my romi wheels
-    while (encoders.getCountsLeft() < newVal)
+    //encoders.getCountsAndResetLeft();
+    float newVal = (degrees / 360) * 14 * CPR / 6.9; // 2.5 inches is the diameter measured for my romi wheels
+
+    if (encoders.getCountsLeft() > newVal)
+    {
+        doneTurningAng = true;
+        motors.setEfforts(0, 0);
+    }
+    else
     {
         motors.setEfforts(100, -100);
     }
-    motors.setEfforts(0, 0);
-    delay(1000);
+    //delay(1000);
+}
+
+void Chassis::setDDBDone(bool val)
+{
+    ddbdone = val;
 }
 
 long chassisTemp = 4;
@@ -40,8 +106,13 @@ void Chassis::findOtherSide()
     for (int i = 0; i < 3; i++)
     {
         driveDistance(chassisTemp); // some small dist
-        turnAngle(90);
+        turnPID(90);                //TODO: add reset pids
     }
+}
+
+bool Chassis::getDoneTurningAng()
+{
+    return doneTurningAng;
 }
 
 void Chassis::resetPID()
@@ -53,8 +124,38 @@ void Chassis::resetPID()
     left_integral = 0;
     right_integral = 0;
 
+    left_deriv = 0;
+    right_deriv = 0;
+
     left_last_error = 0;
     right_last_error = 0;
+
+    doneTurning = false;
+    ddbdone = false;
+    ddstart = false;
+}
+
+bool Chassis::getDoneTurning()
+{
+    return doneTurning;
+}
+void Chassis::setDoneTurning(bool x)
+{
+    doneTurning = x;
+}
+
+bool Chassis::getDDBDone()
+{
+    return ddbdone;
+}
+bool Chassis::getDDDone()
+{
+    return dddone;
+}
+
+void Chassis::setDDDone(bool val)
+{
+    dddone = val;
 }
 
 void Chassis::turnPID(float degrees)
@@ -84,23 +185,8 @@ void Chassis::turnPID(float degrees)
 
     // Setting Efforts
 
-    if (left_pid_effort > 140)
-    {
-        left_pid_effort = 140;
-    }
-    else if (left_pid_effort < -140)
-    {
-        left_pid_effort = -140;
-    }
-
-    if (right_pid_effort > 140)
-    {
-        right_pid_effort = 140;
-    }
-    else if (right_pid_effort < -140)
-    {
-        right_pid_effort = -140;
-    }
+    left_pid_effort = constrain(left_pid_effort, -80, 80);
+    right_pid_effort = constrain(right_pid_effort, -80, 80);
 
     // remembering errors for derivative control
     left_last_error = left_current_error;
@@ -109,4 +195,9 @@ void Chassis::turnPID(float degrees)
     // setting efforts
     motors.setLeftEffort(left_pid_effort);
     motors.setRightEffort(right_pid_effort);
+
+    if (abs(left_current_error) < 10 && abs(right_current_error) < 10 && abs(abs(encoders.getCountsLeft()) - abs(encoders.getCountsRight())) < 10)
+    {
+        setDoneTurning(true);
+    }
 }

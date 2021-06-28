@@ -14,13 +14,20 @@ void BlueMotor::setup()
   pinMode(AIN2, OUTPUT);
   pinMode(ENCA, INPUT);
   pinMode(ENCB, INPUT);
+
+  newValue = 0;
+  oldValue = 0;
+  count = 0;
+  errorCount = 0;
+  value = 0;
+
   // motors.setEfforts(0, 0);
 }
 
 void BlueMotor::reset()
 {
-
   digitalWrite(PWMOutPin, LOW);
+  arm_PID_done = false;
 }
 
 void BlueMotor::setEffort(int effort, bool clockwise)
@@ -76,6 +83,15 @@ int BlueMotor::getNewEffort()
   return effort_new;
 }
 
+void BlueMotor::resetPID()
+{
+  arm_PID_done = false;
+  pid_current_error = 0;
+  pid_last_error = 0;
+  pid_integral = 0;
+  pid_deriv = 0;
+}
+
 void BlueMotor::moveTo(long position)
 {
   // setting values for current PID loop
@@ -102,6 +118,13 @@ void BlueMotor::moveTo(long position)
   // remembering variables for next calc cycle
   pid_last_error = pid_current_error;
   setEffortWithoutDB(effort_out);
+
+  long pid_new_error = position - getPosition();
+  if (pid_new_error == 0 && abs(pid_deriv) < 5)
+  {
+    arm_PID_done = true;
+    effort_out = 0;
+  }
 }
 
 float BlueMotor::getEffortOut()
@@ -114,4 +137,7 @@ long BlueMotor::getPosition()
   return count;
 }
 
-
+bool BlueMotor::wasArmMoved()
+{
+  return arm_PID_done;
+}

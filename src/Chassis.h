@@ -9,16 +9,29 @@ class Chassis
 {
     /** * Assume the robot drives about 12 inches / second* Take the number of inches, divide by 12 and drive that long */
 public:
-    void driveDistance(float inches);
+    void driveDistance(float cm);
     /** * Assume the robot turns at about 180 degrees per second */
     void turnAngle(float degrees);
     void findOtherSide();
     void resetPID();
     void turnPID(float degrees);
+    void driveDistanceBackward(float cm);
+    void driveDistanceNoLine(float cm);
 
     const float wheelDiameter = 2.8;
     const int CPR = 1440;
     const float wheelTrack = 5.75;
+    bool getDoneTurning();
+    void setDoneTurning(bool x);
+    bool getDDBDone();
+    bool getDDDone();
+    void setDDBDone(bool val);
+    void setDDDone(bool val);
+    bool getDoneTurningAng();
+    int checkloop = 0;
+    bool ddstart = false;
+
+    
 
 private:
     Romi32U4Motors motors;
@@ -36,14 +49,14 @@ private:
     int left_last_error = 0;
     int right_last_error = 0;
 
-    float lpk = 1.2;
-    float rpk = .8;
+    float lpk = 1;  //1.2
+    float rpk = 1;  //.8
 
-    float lik = 0.0005;
-    float rik = 0.0005;
+    float lik = 0.001;
+    float rik = 0.001;
 
-    float ldk = 30;
-    float rdk = 20;
+    float ldk = 30;  //30
+    float rdk = 30;  //20
 
     float left_p_gain = 0;
     float right_p_gain = 0;
@@ -56,4 +69,12 @@ private:
 
     float left_pid_effort = 0;
     float right_pid_effort = 0;
+
+    const float dis_in_one = 2.73 * 3.141592; // d*pi
+    const float deg_in_one = 2.73 * 360 / wheelTrack;
+
+    bool doneTurning = false;
+    bool doneTurningAng = false;
+    bool ddbdone = false;
+    bool dddone = false;
 };

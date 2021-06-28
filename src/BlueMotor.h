@@ -18,7 +18,7 @@ public:
     int errorCount = 0;
     void setEffort(int effort);
     void setEffortWithoutDB(float effort);
-    void moveTo(long position); // for next lab
+    void moveTo(long position);
     long getPosition();
     int getNewEffort();
     void reset();
@@ -31,6 +31,9 @@ public:
     float d_gain = 0;
     float get_effort_new();
 
+    bool wasArmMoved();
+
+    void resetPID();
 
 private:
     void setEffort(int effort, bool clockwise);
@@ -45,4 +48,6 @@ private:
     long pid_deriv = 0;
     float deriv_k = .3;
     float effort_out = 0;
+
+    bool arm_PID_done = false;
 };

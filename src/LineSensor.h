@@ -7,9 +7,18 @@ class LineSensor
 public:
     LineSensor();
     float getValue();
-    float getLeft();
-    float getRight();
+    int getLeft();
+    int getRight();
+    void lineFollow();
+    //void lineFollowBackward();
+
+
+    bool al_plate=false;
+    void setDoneLineFollow(bool val);
+    bool getDoneLineFollow();
+
 
     //const
-    //private:
+    private:
+    bool doneLineFollow = false;
 };

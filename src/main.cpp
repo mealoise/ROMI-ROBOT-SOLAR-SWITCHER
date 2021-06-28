@@ -1,8 +1,3 @@
-\\******** RBE 2001 Final Project **********\\
-\\******** March 17th 2021 ***************\\
-\\ Developed by Megan Aloise, Roopsa Ghoosh, and Cameron Huneke \\
-
-
 #include <Arduino.h>
 #include <Romi32U4.h>
 #include "Chassis.h"
@@ -12,9 +7,11 @@
 #include "Romi32U4Buttons.h"
 #include "Timer.h"
 #include "servo32u4.h"
+#include "LineSensor.h"
 #include "Rangefinder.h"
 
 Romi32U4Motors motors;
+Romi32U4Encoders encoders;
 Chassis chassis;
 Rangefinder range;
 
@@ -27,21 +24,43 @@ enum States
   DRIVINGTO45,
   ADJUSTINGGRIPPER,
   GRIPPING45,
+  LIFTING45PLATE,
   DRIVINGTO90TURN,
+  CROSSTURN,
   DRIVINGTOSUPPLY,
+  ROTATEATSUPPLY,
   PLACINGONSUPPLY,
   AWAITINGNEWPANEL,
   GRABBINGFROMSUPPLY,
   DRIVINGTONEG90TURN,
+  CROSSTURNTWO,
+  ROTATEAT45,
+  BACKINGUP45,
   DRIVINGTO45PLACING,
   PLACING45,
   FINDINGOTHERSIDE,
   DRIVINGTO25,
   GRIPPING25,
   DRIVETO25PLACING,
+  ROTATEAT25,
+  BACKINGUP25,
+  LIFTING25PLATE,
   PLACING25,
   PAUSED
 } state;
+
+enum traverse_progress
+{
+  TURN1,
+  FD1,
+  TURN2,
+  FD2,
+  TURN3,
+  FD3,
+  LOCATEHOUSE
+} progress;
+
+//States current_state = GRIPPING45;
 
 int stage = 1;
 
@@ -58,42 +77,54 @@ void checkRemote()
   int16_t code = decoder.getKeyCode();
   switch (code)
   {
-  case remoteVolMinus:
+  case remote2:
+  {
+    newReady = true;
+    break;
+  case remote3:
+    newReady = false;
+    break;
+  case remote5:
     paused = true;
     stateBeforePaused = state;
     state = PAUSED;
     break;
-  case remoteVolPlus:
-    paused = false;
-    state = stateBeforePaused;
-    break;
-  case remote2:
-    newReady = true;
-    // state = ?
-    break;
-  case remote3:
-    newReady = false;
-    // state = ?
-    break;
-  case remote5:
-    restart = true;
-    //state = ?
-    break;
   case remote6:
-    restart = false;
-    //state = ?
+    paused = false;
+    state = STARTING;
     break;
+  }
   }
 }
 
 BlueMotor bm;
 Servo32U4 servo;
+LineSensor ls;
+
+bool turnAndInch_finished = false;
 
 void turnAndInchToRoof()
 {
-  chassis.turnPID(180);
-  servo.Write(300);             // open gripper
-  chassis.driveDistance(-temp); // desired dist NEGATIVE
+  if (chassis.getDoneTurning())
+  {
+    servo.Write(1100); // open gripper
+
+    if (analogRead(A0) < 240) // open gripper analog read
+    {
+      if (chassis.getDDBDone())
+      {
+        turnAndInch_finished = true;
+      }
+      else
+      {
+        chassis.driveDistanceBackward(5.3);
+      }
+    }
+  }
+  else
+  {
+    chassis.turnPID(175);
+  }
 }
 
 int old_effort = 0;
@@ -106,6 +137,37 @@ char encoderArray[4][4] = {
     {X, 1, -1, 0}};
 
 Romi32U4ButtonB pb;
+
+// effort variables used in driveToObject()
+int16_t old_efforts = 0;
+int16_t new_efforts = 0;
+
+float dto_error = 0;
+bool dto_done = false;
+float dto_int_error = 0;
+
+void driveToObject(double desiredDist)
+{
+
+  const float Kp = 8;
+  const float Ki = .2;
+  dto_error = range.getDistanceCM() - desiredDist;
+  dto_int_error += dto_error;
+  float a = (Kp * dto_error) + (Ki * dto_int_error);
+
+  new_efforts = constrain(a, -50, 60);
+
+  if (range.getDistanceCM() > desiredDist + 40)
+  {
+    // motors.setEfforts(1.1 * old_efforts, old_efforts);
+    ls.lineFollow();
+  }
+  else
+  {
+    ls.lineFollow();
+  }
+  dto_done = dto_error < .25;
+}
 
 void isr()
 {
@@ -145,12 +207,14 @@ void pwmSetup()
 
 void setup()
 {
+  //state = PAUSED;
   state = STARTING;
-
+  progress = TURN1;
   range.setup();
+
   Serial.begin(9600);
   decoder.init();
-  pinMode(LED_BUILTIN, OUTPUT);
+
   pinMode(bm.PWMOutPin, OUTPUT);
   pinMode(bm.AIN2, OUTPUT);
   pinMode(bm.AIN1, OUTPUT);
@@ -160,10 +224,13 @@ void setup()
   attachInterrupt(digitalPinToInterrupt(0), isr, CHANGE);
   attachInterrupt(digitalPinToInterrupt(1), isr, CHANGE);
 
-  servo.Init();
+  bm.setup();
+
+  chassis.resetPID();
+
+  servo.SetMinMaxUS(900, 2500);
   servo.Attach();
-  servo.SetMinMaxUS(900, 2100);
-  pinMode(18, INPUT);
+  pinMode(18, INPUT); // IR receiver
 
   // put your setup code here, to run once:
 }
@@ -176,83 +243,81 @@ const float KdBM = 0;
 long timeToPrint = 0;
 float sumOfErrorsBM = 0;
 
-long romiLen = 17.5; // in CM
+long romiLen = 16; // in CM
+
+Timer PIDTimer(10);
 
 void loop()
 {
-
-  //Lab Part 1, when doing the other direction just change the loop to
-  //for(int i=0;i>-400;i--)
-  //for(int i=0;i<400;i++)
-  //check for the effort values and the position
-  //check if the motr turns consistently starts to turn
-
-  long temporary = 5.5;
-  long encoderVarTemp = 3.2;
+  checkRemote();
+  range.loop();
 
   switch (state)
   {
   case STARTING:
-    // make sure lifitng after in start position
-    motors.setEfforts(150, 150); //choose efforts
-    state = DRIVINGTO45;
+  {
+    bm.moveTo(-3282); // to be ready to grab 45; 45 pickup initial position
+    if (bm.wasArmMoved())
+    {
+      state = DRIVINGTO45;
+      chassis.resetPID();
+    }
+  }
+  break;
 
   case DRIVINGTO45:
   {
-    long currentDist = range.getDistanceCM();
-    while (currentDist < desiredDist)
-    {                                                      // temp is dist desired to proper placement
-      long error = range.getDistanceCM() - encoderVarTemp; // change to however encoder calculated
-      if (error * error < temporary)
-      { // some reasonable value
-        motors.setEfforts(0, 0);
-        turnAndInchToRoof();
-        state = ADJUSTINGGRIPPER;
+    if (PIDTimer.isExpired() && !dto_done)
+    {
+      driveToObject(22);
+      PIDTimer.reset();
+    }
+    if (!turnAndInch_finished && ((range.getDistanceCM()) < 22.5 || dto_done))
+    {
+      turnAndInchToRoof();
+    }
+    else if (turnAndInch_finished)
+    {
+      state = GRIPPING45;
+      chassis.resetPID();
+    }
+  }
+  break;
+
+  case ADJUSTINGGRIPPER: //TODO: not being used currently
+  {
+    //Serial.println("ADJUSTINGGRIPPER state");
+    long errorG = analogRead(A0) - 400; //servo read value vs desired
+    Serial.println("analogread success");
+    servo.Write(2500 + errorG * 2500 / 400);
+    if (errorG * errorG < 0.01) // alter later; to compensate for error
+    {                           // or some other val
+      if (stage == 1)           // not exactly but whatever
+      {
+        // third is while adjust gripper is finished
+        state = GRIPPING45;
+      }
+      else if (stage == 2)
+      {
+        state = GRABBINGFROMSUPPLY;
+      }
+      else if (stage == 3)
+      {
+        state = GRIPPING25;
+      }
+      else if (stage == 4)
+      {
+        state = GRABBINGFROMSUPPLY;
       }
       else
       {
-        while (encoderVarTemp < temporary)
-        {                          // temp is dist desired
-          motors.setEfforts(0, 0); // may need to separate from while statement
-          turnAndInchToRoof();
-          servo.Write(0); // close gripper
-          state = ADJUSTINGGRIPPER;
-        };
+        //Serial.println("Oh no! 1");
+        state = PAUSED;
       }
-    };
-  }
-  break;
-  case ADJUSTINGGRIPPER:
-  {
-    long errorG = encoderVarTemp - temp; //servo read value vs desired
-    while (errorG * errorG > 0.01)
-    {                      // or some other val
-      servo.Write(errorG); // alter later; to compensate for error
-    };
-    if (stage == 1 && encoderVarTemp == temp) // not exactly but whatever
-    {
-      // third is while adjust gripper is finished
-      state = GRIPPING45;
-    }
-    else if (stage == 2 && encoderVarTemp == temp)
-    {
-      state = GRABBINGFROMSUPPLY;
-    }
-    else if (stage == 3 && encoderVarTemp == temp)
-    {
-      state = GRIPPING25;
-    }
-    else if (stage == 4 && encoderVarTemp == temp)
-    {
-      state = GRABBINGFROMSUPPLY;
-    }
-    else
-    {
-      Serial.println("Oh no! 1");
-      state = PAUSED;
     }
   }
   break;
+
   case GRIPPING45:
   {
     checkRemote();
@@ -262,137 +327,251 @@ void loop()
     }
     else
     {
-      motors.setEfforts(150, 150); // desired effort
-      stage++;
+      servo.Write(2250);
+      if (analogRead(A0) > 395)
+      {
+        stage++;
+        state = LIFTING45PLATE;
+        bm.resetPID();
+      }
+    }
+  }
+  break;
+
+  case LIFTING45PLATE:
+  {
+    bm.moveTo(-7100);
+    if (bm.wasArmMoved())
+    {
+      bm.resetPID();
+      bm.setEffort(0);
+      chassis.setDDDone(false);
+      chassis.setDoneTurning(false);
+      chassis.resetPID();
+      ls.setDoneLineFollow(false);
+      //encoders.getCountsAndResetRight();
+      //encoders.getCountsAndResetLeft();
       state = DRIVINGTO90TURN;
     }
   }
   break;
   case DRIVINGTO90TURN:
   {
+    if (ls.getDoneLineFollow())
     // line sensor to stop at corner
-    if (temp > temporary)
-    { // voltage values
-      motors.setEfforts(0, 0);
-      chassis.driveDistance(0.5 * romiLen); // where temp is length of Romi
-      chassis.turnPID(90);
-      motors.setEfforts(150, 150);
-    }
-    if (stage <= 2)
     {
-      state = DRIVINGTOSUPPLY;
-    }
-    else if (stage >= 3)
-    {
-      state = DRIVETO25PLACING;
+      chassis.driveDistance(0.5 * romiLen);
+
+      if (chassis.getDDDone())
+      {
+        chassis.resetPID();
+        chassis.setDoneTurning(false);
+        encoders.getCountsAndResetRight();
+        encoders.getCountsAndResetLeft();
+        state = CROSSTURN;
+      }
     }
     else
     {
-      Serial.println("Oh no! 2");
-      state = PAUSED;
+      ls.lineFollow();
     }
   }
   break;
-  case DRIVINGTOSUPPLY:
+
+  case CROSSTURN:
   {
-    while (range.getDistanceCM() < desiredDist)
-    { // where temp is desired dist
-      motors.setEfforts(0, 0);
-      chassis.turnPID(180);
-      bm.moveTo(temp);              // desired height
-      chassis.driveDistance(-temp); // drive backwards small amount to line w supply
-      state = PLACINGONSUPPLY;
-    };
+
+    chassis.turnPID(90);
+    if (chassis.getDoneTurning())
+    {
+      chassis.resetPID();
+      //bm.resetPID();
+      chassis.setDoneTurning(false);
+      encoders.getCountsAndResetLeft();
+      encoders.getCountsAndResetRight();
+      dto_done = false;
+      state = DRIVINGTOSUPPLY;
+    }
   }
   break;
+
+  case DRIVINGTOSUPPLY:
+  {
+    if (dto_done)
+    {
+      state = ROTATEATSUPPLY;
+      chassis.resetPID();
+      chassis.setDoneTurning(false);
+      encoders.getCountsAndResetLeft();
+      encoders.getCountsAndResetRight();
+    }
+    else
+    {
+      driveToObject(15);
+    }
+  }
+  break;
+
+  case ROTATEATSUPPLY:
+  {
+    chassis.turnPID(175);
+    if (chassis.getDoneTurning())
+    {
+      state = PLACINGONSUPPLY;
+      bm.resetPID();
+      chassis.setDDBDone(false);
+      chassis.checkloop = 0;
+    }
+  }
+  break;
+
   case PLACINGONSUPPLY:
   {
     checkRemote();
     if (restart)
     {
-      state = STARTING;
+      //state = STARTING;
     }
     else
     {
-      servo.Write(300);            // open gripper
-      chassis.driveDistance(temp); // a few forward
-      state = AWAITINGNEWPANEL;
+
+      chassis.driveDistanceBackward(5); // drive backwards small amount to line w supply
+      if (chassis.getDDBDone())
+      {
+        bm.moveTo(-20); // desired height for supply dropoff
+        if (bm.wasArmMoved())
+        {
+          bm.setEffort(0);
+          servo.Write(1100); // open gripper
+          if (analogRead(A0) < 240)
+          { // to be adjusted if needed
+            state = AWAITINGNEWPANEL;
+          }
+        }
+      }
     }
   }
   break;
+
   case AWAITINGNEWPANEL:
   {
     checkRemote();
     if (newReady)
     {
-      chassis.driveDistance(-temp); // some small dist back
-      servo.Write(0);               // close gripper
-      state = ADJUSTINGGRIPPER;
-    }
-    else
-    {
-      Serial.println("Oh No! 3");
-      state = PAUSED;
+      servo.Write(2250);        // close gripper
+      if (analogRead(A0) > 395) // checks if gripper is sufficiently closed before proceeding
+      {
+        state = GRABBINGFROMSUPPLY;
+        bm.resetPID();
+      }
     }
   }
   break;
+
   case GRABBINGFROMSUPPLY:
   {
     checkRemote(); // might not need all these but for double measure
     if (restart)
     {
-      state = STARTING;
+      //state = STARTING;
     }
     else
     {
-      bm.moveTo(temp); // desired pos for 45
-      motors.setEfforts(150, 150);
-      if (stage <= 2)
+      bm.moveTo(-7100);
+      if (bm.wasArmMoved())
       {
+
         state = DRIVINGTONEG90TURN;
-      }
-      else
-      {
-        state = DRIVINGTO90TURN;
+        bm.resetPID();
+        bm.setEffort(0);
+        ls.setDoneLineFollow(false);
+        chassis.setDDDone(false);
+        chassis.setDoneTurning(false);
+        chassis.resetPID();
       }
     }
   }
   break;
+
   case DRIVINGTONEG90TURN:
   {
-    // use line sensor to detect corner/stop
-    if (temp < temporary)
-    { //line sensor reading a stop w voltages
-      motors.setEfforts(0, 0);
-      chassis.driveDistance(0.5 * romiLen); // where temp is length of Romi
-      chassis.turnPID(90);
-      motors.setEfforts(150, 150);
-    }
-    if (stage <= 2)
+    if (ls.getDoneLineFollow())
+    // line sensor to stop at corner
     {
-      state = DRIVINGTO45PLACING;
-    }
-    else if (stage >= 3)
-    {
-      state = DRIVINGTOSUPPLY;
+      chassis.driveDistance(0.5 * romiLen + 0.3); // to position Romi at center of T for proper point turn
+
+      if (chassis.getDDDone())
+      {
+        chassis.resetPID();
+        chassis.setDoneTurning(false);
+        encoders.getCountsAndResetRight();
+        encoders.getCountsAndResetLeft();
+        state = CROSSTURNTWO;
+      }
     }
     else
     {
-      Serial.println("Oh no! 4");
-      state = PAUSED;
+      ls.lineFollow();
     }
   }
   break;
+
+  case CROSSTURNTWO:
+  {
+    chassis.turnPID(-90);
+    if (chassis.getDoneTurning())
+    {
+      chassis.resetPID();
+      bm.resetPID();
+      chassis.setDoneTurning(false);
+      encoders.getCountsAndResetLeft();
+      encoders.getCountsAndResetRight();
+      dto_done = false;
+      state = DRIVINGTO45PLACING;
+    }
+  }
+  break;
+
   case DRIVINGTO45PLACING:
   {
-    while (range.getDistanceCM() < desiredDist)
-    { //where temp is desired dist; could be issues w conditions changing
-      motors.setEfforts(0, 0);
-      chassis.turnPID(180);
-      bm.moveTo(temp);              // temp is desired pos
-      chassis.driveDistance(-temp); // where temp is small NEG dist
+    if (dto_done)
+    {
+      state = ROTATEAT45;
+      chassis.resetPID();
+      chassis.setDoneTurning(false);
+      encoders.getCountsAndResetLeft();
+      encoders.getCountsAndResetRight();
+    }
+    else
+    {
+      driveToObject(21.2);
+    }
+  }
+  break;
+
+  case ROTATEAT45:
+  {
+    chassis.turnPID(180);
+    if (chassis.getDoneTurning())
+    {
+      state = BACKINGUP45;
+      bm.resetPID();
+      chassis.resetPID();
+      chassis.setDDBDone(false);
+      chassis.checkloop = 0;
+    }
+  }
+  break;
+  case BACKINGUP45:
+  {
+    if (chassis.getDDBDone())
+    {
       state = PLACING45;
-    };
+    }
+    else
+    {
+      chassis.driveDistanceBackward(5.3);
+    }
   }
   break;
   case PLACING45:
@@ -400,44 +579,166 @@ void loop()
     checkRemote();
     if (restart)
     {
-      state = STARTING;
+      // state = STARTING;
     }
     else
     {
-      servo.Write(300); // open gripper
-      chassis.findOtherSide();
-      motors.setEfforts(150, 150);
-      state = FINDINGOTHERSIDE;
+      bm.moveTo(-3624);
+      if (bm.wasArmMoved())
+      {
+        servo.Write(1100); // open gripper
+        if (analogRead(A0) < 240)
+        { // subj to change
+          state = FINDINGOTHERSIDE;
+          chassis.resetPID();
+          chassis.setDoneTurning(false);
+          chassis.setDDBDone(false);
+          chassis.setDDDone(false);
+        }
+      }
     }
   }
   break;
+
   case FINDINGOTHERSIDE:
   {
-    // use line sensor to detect path
-    if (temp < temporary)
-    { //line sensor condition of detecting path
-      motors.setEfforts(0, 0);
-      chassis.driveDistance(0.5 * romiLen); // where temp is romi len
+
+    switch (progress)
+    {
+    case TURN1:
+    {
       chassis.turnPID(90);
-      motors.setEfforts(150, 150);
-      state = DRIVINGTO25;
+      if (chassis.getDoneTurning())
+      {
+        progress = FD1;
+        chassis.resetPID();
+        encoders.getCountsAndResetLeft();
+        encoders.getCountsAndResetRight();
+      }
+    }
+    break;
+
+    case FD1:
+    {
+      chassis.driveDistanceNoLine(30);
+      if (chassis.getDDDone())
+      {
+        progress = TURN2;
+        chassis.setDDDone(false); // This is going to be an issue
+        chassis.resetPID();
+        encoders.getCountsAndResetLeft();
+        encoders.getCountsAndResetRight();
+      }
+    }
+    break;
+
+    case TURN2:
+    {
+      chassis.turnPID(90);
+      if (chassis.getDoneTurning())
+      {
+        chassis.resetPID(); // also going to be in issue etc etc
+        progress = FD2;
+        encoders.getCountsAndResetLeft();
+        encoders.getCountsAndResetRight();
+      }
+    }
+    break;
+
+    case FD2:
+    {
+      chassis.driveDistanceNoLine(70);
+      if (chassis.getDDDone())
+      {
+        progress = TURN3;
+        chassis.setDDDone(false);
+        chassis.resetPID();
+        encoders.getCountsAndResetLeft();
+        encoders.getCountsAndResetRight();
+      }
+    }
+    break;
+
+    case TURN3:
+    {
+      chassis.turnPID(90);
+      if (chassis.getDoneTurning())
+      {
+        progress = FD3;
+        chassis.resetPID();
+        chassis.setDDDone(false);
+        encoders.getCountsAndResetLeft();
+        encoders.getCountsAndResetRight();
+      }
+    }
+    break;
+
+    case FD3:
+    {
+      if (ls.getDoneLineFollow())
+      {
+        chassis.driveDistance(.5 * romiLen);
+        if (chassis.getDDDone())
+        {
+          progress = LOCATEHOUSE;
+          chassis.resetPID();
+          encoders.getCountsAndResetLeft();
+          encoders.getCountsAndResetRight();
+        }
+      }
+      else
+      {
+        ls.lineFollow();
+      }
+    }
+    break;
+
+    case LOCATEHOUSE:
+    {
+      chassis.turnPID(90);
+      if (chassis.getDoneTurning())
+      {
+        bm.moveTo(-3600); // temporary value, change to desired height for 25 pickup
+        state = DRIVINGTO25;
+        chassis.resetPID(); // issue w reset while in this condition potentially
+        encoders.getCountsAndResetLeft();
+        encoders.getCountsAndResetRight();
+      }
+    }
+    break;
     }
   }
   break;
+
   case DRIVINGTO25:
   {
     stage++;
-    while (range.getDistanceCM() < desiredDist)
+
+    if (PIDTimer.isExpired() && !dto_done)
     {
-      chassis.turnPID(180);
-      chassis.driveDistance(-temp); // drive backward some small dist
-      servo.Write(0);               // close gripper
-      state = ADJUSTINGGRIPPER;
-    };
+      driveToObject(22);
+      //Serial.println(range.getDistanceCM());
+      PIDTimer.reset();
+    }
+    //Serial.println(turnAndInch_finished);
+    if (!turnAndInch_finished && ((range.getDistanceCM()) < 22.5 || dto_done))
+    {
+      //Serial.println("drive initilize success");
+      //delay(2500);
+      turnAndInchToRoof();
+    }
+    else if (turnAndInch_finished)
+    {
+      Serial.println("inch to roof success");
+
+      state = GRIPPING25;
+      chassis.resetPID();
+    }
   }
   break;
   case GRIPPING25:
   {
+
     checkRemote();
     if (restart)
     {
@@ -445,45 +746,112 @@ void loop()
     }
     else
     {
-      stage++;
-      motors.setEfforts(150, 150);
+
+      servo.Write(2250);
+      if (analogRead(A0) > 395)
+      {
+        stage++;
+        state = LIFTING25PLATE;
+        bm.resetPID();
+      }
+    }
+  }
+  break;
+  case LIFTING25PLATE:
+  {
+    bm.moveTo(-7100);
+    if (bm.wasArmMoved())
+    {
+      bm.resetPID();
+      bm.setEffort(0);
+      chassis.setDDDone(false);
+      chassis.setDoneTurning(false);
+      chassis.resetPID();
+      ls.setDoneLineFollow(false);
+      //encoders.getCountsAndResetRight();
+      //encoders.getCountsAndResetLeft();
       state = DRIVINGTONEG90TURN;
     }
   }
   break;
   case DRIVETO25PLACING:
   {
-    while (range.getDistanceCM() < desiredDist)
-    { // where temp is desired dist from platform
-      motors.setEfforts(0, 0);
-      chassis.turnPID(180);
-      chassis.driveDistance(temp); // some small dist
-      bm.moveTo(temp);             // desired height
-      state = PLACING25;
+    //where temp is desired dist; could be issues w conditions changing
+    if (dto_done)
+    {
+      state = ROTATEAT25;
+      chassis.resetPID();
+      chassis.setDoneTurning(false);
+      encoders.getCountsAndResetLeft();
+      encoders.getCountsAndResetRight();
+    }
+    else
+    {
+      driveToObject(21.2);
     }
   }
   break;
+  case ROTATEAT25:
+  {
+    chassis.turnPID(180);
+    if (chassis.getDoneTurning())
+    {
+      state = BACKINGUP25;
+      bm.resetPID();
+      chassis.resetPID();
+      chassis.setDDBDone(false);
+      chassis.checkloop = 0;
+    }
+  }
+  break;
+  case BACKINGUP25:
+  {
+    if (chassis.getDDBDone())
+    {
+      state = PLACING25;
+    }
+    else
+    {
+      chassis.driveDistanceBackward(5.3);
+    }
+  }
   case PLACING25:
   {
     checkRemote();
     if (restart)
     {
-      state = STARTING;
+      // state = STARTING;
     }
     else
     {
-      servo.Write(300);            // open gripper
-      chassis.driveDistance(temp); // some small dist to back up
-      state = PAUSED;
+
+      bm.moveTo(-3624); // new desired 25 location
+      if (bm.wasArmMoved())
+      {
+        servo.Write(1100); // open gripper
+        if (analogRead(A0) < 240)
+        { // subj to change
+          state = FINDINGOTHERSIDE;
+          chassis.resetPID();
+          chassis.setDoneTurning(false);
+          chassis.setDDBDone(false);
+          chassis.setDDDone(false);
+        }
+      }
     }
   }
   break;
   case PAUSED:
   {
-    motors.setEfforts(0, 0);
+    // motors.setEfforts(0, 0);
+    // bm.setEffort(0);
+    // servo.Detach();
+    // checkRemote();
+    // if (!paused)
+    // {
+    //   state = stateBeforePaused;
+    // }
   }
   break;
   }
-
-  checkRemote();
 }

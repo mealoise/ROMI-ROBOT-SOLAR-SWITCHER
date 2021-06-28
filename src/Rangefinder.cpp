@@ -69,9 +69,9 @@ void Rangefinder::loop()
 float Rangefinder::getDistanceCM()
 {
     long rt;
-    cli();
+    //cli();
     rt = roundTripTime;
-    sei();
+    //sei();
     float distance = (rt * 0.0343) / 2.0;
     return distance;
 }
